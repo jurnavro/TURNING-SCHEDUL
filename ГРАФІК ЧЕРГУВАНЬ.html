@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pro Schedule — Редактор чергувань</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --text: #1a1a18;
+    --border: #e0e0e0;
+    --morning: #d1fae5;
+    --morning-txt: #065f46;
+    --evening: #fef3c7;
+    --evening-txt: #92400e;
+    --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121212;
+      --bg-secondary: #1e1e1e;
+      --text: #e5e7eb;
+      --border: #333;
+      --morning: #064e3b;
+      --morning-txt: #6ee7b7;
+      --evening: #451a03;
+      --evening-txt: #fcd34d;
+    }
+  }
+  body {
+    font-family: -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 15px; padding: 15px;
+    background: var(--bg-secondary); border-radius: 12px; margin-bottom: 20px;
+  }
+  .ctrl-group { display: flex; flex-direction: column; gap: 5px; }
+  label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; }
+  input, select {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text);
+  }
+  
+  .names-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .draggable-name {
+    padding: 6px 12px; background: var(--bg-secondary); border: 1px dashed var(--border);
+    border-radius: 6px; cursor: grab; font-size: 13px; display: flex; align-items: center; gap: 8px;
+  }
+  .draggable-name:active { cursor: grabbing; opacity: 0.5; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  th, td { border: 1px solid var(--border); padding: 12px; text-align: center; }
+  th { background: var(--bg-secondary); font-size: 12px; color: #888; }
+  
+  .shift-cell { cursor: pointer; transition: background 0.2s; position: relative; }
+  .shift-cell:hover { filter: brightness(0.9); }
+  .morning { background: var(--morning); color: var(--morning-txt); font-weight: bold; }
+  .evening { background: var(--evening); color: var(--evening-txt); font-weight: bold; }
+  .off { color: #555; font-size: 11px; }
+
+  .dragging { opacity: 0.4; border: 2px solid var(--accent) !important; }
+  .drag-over { background: rgba(37, 99, 235, 0.1) !important; outline: 2px solid var(--accent); }
+
+  .btn {
+    padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer;
+    font-weight: 600; transition: 0.2s;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 25px; }
+  .stat-card { padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-secondary); }
+
+  @media print {
+    .controls, .names-list, .btn, .no-print { display: none !important; }
+    body { padding: 0; }
+    table { border: 2px solid black; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Графік чергувань</h1>
+  <button class="btn btn-outline" onclick="window.print()">Друк 🖨️</button>
+</div>
+
+<div class="controls">
+  <div class="ctrl-group">
+    <label>Початок</label>
+    <input type="date" id="startDate">
+  </div>
+  <div class="ctrl-group">
+    <label>Кількість персоналу</label>
+    <select id="numWorkers" onchange="initWorkers(); generate();">
+      <option value="2">2 (Форс-мажор)</option>
+      <option value="3">3 (Посилений)</option>
+      <option value="4">4 особи</option>
+      <option value="5">5 осіб</option>
+      <option value="6" selected>6 осіб</option>
+    </select>
+  </div>
+  <button class="btn btn-primary" onclick="generate()" style="align-self: flex-end;">Генерувати ↻</button>
+</div>
+
+<div id="namesContainer" class="names-list"></div>
+
+<div style="overflow-x: auto;">
+  <table id="mainTable">
+    <thead><tr id="tableHead"></tr></thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+</div>
+
+<div class="stats" id="statsContainer"></div>
+
+<script>
+let workers = ['Білаш В.', 'Челібі Б.', 'Горін В.', 'Сулима П.', 'Бондар Т.', 'Мельник Р.'];
+let schedule = [];
+const daysUa = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+
+function getWeekNum(d) {
+  let date = new Date(d);
+  date.setHours(0,0,0,0);
+  date.setDate(date.getDate() + 4 - (date.getDay()||7));
+  return Math.ceil((((date - new Date(date.getFullYear(),0,1))/8.64e7)+1)/7);
+}
+
+function initWorkers() {
+  const n = parseInt(document.getElementById('numWorkers').value);
+  const container = document.getElementById('namesContainer');
+  container.innerHTML = '';
+  
+  // Обрізаємо або додаємо імена
+  let currentNames = workers.slice(0, n);
+  while(currentNames.length < n) currentNames.push(`Співробітник ${currentNames.length+1}`);
+  workers = currentNames;
+
+  workers.forEach((name, i) => {
+    const div = document.createElement('div');
+    div.className = 'draggable-name';
+    div.draggable = true;
+    div.innerHTML = `☰ <input type="text" value="${name}" onchange="workers[${i}]=this.value; renderAll();">`;
+    
+    // Drag and Drop для списку імен
+    div.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', i); div.classList.add('dragging'); });
+    div.addEventListener('dragend', () => div.classList.remove('dragging'));
+    div.addEventListener('dragover', (e) => e.preventDefault());
+    div.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const fromIdx = e.dataTransfer.getData('text/plain');
+      const toIdx = i;
+      [workers[fromIdx], workers[toIdx]] = [workers[toIdx], workers[fromIdx]];
+      initWorkers();
+      generate();
+    });
+
+    container.appendChild(div);
+  });
+}
+
+function generate() {
+  const n = workers.length;
+  const start = new Date(document.getElementById('startDate').value || new Date());
+  const weekNum = getWeekNum(start);
+  
+  // Ротація для 4+ людей
+  let activeWorkers = [...workers];
+  if (n >= 4 && weekNum % 2 === 0) {
+    [activeWorkers[0], activeWorkers[2]] = [activeWorkers[2], activeWorkers[0]];
+    [activeWorkers[1], activeWorkers[3]] = [activeWorkers[3], activeWorkers[1]];
+  }
+
+  schedule = [];
+  for(let d=0; d<7; d++) {
+    let dayDate = new Date(start.getTime() + d*86400000);
+    let dayShifts = Array(n).fill('off');
+    
+    // Базова логіка: зсув щодня
+    let mIdx = (d + weekNum) % n;
+    let eIdx = (d + weekNum + Math.floor(n/2)) % n;
+    if (eIdx === mIdx) eIdx = (eIdx + 1) % n;
+
+    dayShifts[mIdx] = 'morning';
+    dayShifts[eIdx] = 'evening';
+    
+    schedule.push({ date: dayDate, shifts: dayShifts, names: [...activeWorkers] });
+  }
+  renderAll();
+}
+
+function renderAll() {
+  const n = workers.length;
+  const head = document.getElementById('tableHead');
+  const body = document.getElementById('tableBody');
+  
+  head.innerHTML = '<th>Дата</th>';
+  workers.forEach(w => head.innerHTML += `<th>${w}</th>`);
+
+  body.innerHTML = '';
+  schedule.forEach((day, dayIdx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><b>${daysUa[day.date.getDay()]}</b><br><small>${day.date.toLocaleDateString()}</small></td>`;
+    
+    day.shifts.forEach((s, workerIdx) => {
+      const td = document.createElement('td');
+      td.className = `shift-cell ${s}`;
+      td.innerText = s === 'morning' ? 'Ранок' : (s === 'evening' ? 'Вечір' : '—');
+      td.draggable = true;
+
+      // Drag & Drop для клітинок (ручне коригування)
+      td.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('dayIdx', dayIdx);
+        e.dataTransfer.setData('workerIdx', workerIdx);
+        td.classList.add('dragging');
+      });
+      td.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        td.classList.add('drag-over');
+      });
+      td.addEventListener('dragleave', () => td.classList.remove('drag-over'));
+      td.addEventListener('drop', (e) => {
+        e.preventDefault();
+        td.classList.remove('drag-over');
+        const fromDay = e.dataTransfer.getData('dayIdx');
+        const fromWorker = e.dataTransfer.getData('workerIdx');
+        
+        if(fromDay == dayIdx) { // Міняємо зміни тільки всередині одного дня
+          const temp = schedule[dayIdx].shifts[fromWorker];
+          schedule[dayIdx].shifts[fromWorker] = schedule[dayIdx].shifts[workerIdx];
+          schedule[dayIdx].shifts[workerIdx] = temp;
+          renderAll();
+        }
+      });
+
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+  renderStats();
+}
+
+function renderStats() {
+  const container = document.getElementById('statsContainer');
+  container.innerHTML = '';
+  workers.forEach((name, i) => {
+    let m=0, e=0;
+    schedule.forEach(day => {
+      if(day.shifts[i] === 'morning') m++;
+      if(day.shifts[i] === 'evening') e++;
+    });
+    container.innerHTML += `
+      <div class="stat-card">
+        <div style="font-weight:bold; font-size:12px; margin-bottom:5px;">${name}</div>
+        <div style="font-size:11px;">Ранок: ${m} | Вечір: ${e}</div>
+        <div style="font-size:11px; margin-top:3px; color:#888;">Всього: ${m+e}</div>
+      </div>`;
+  });
+}
+
+// Встановлюємо дату на сьогодні
+document.getElementById('startDate').valueAsDate = new Date();
+initWorkers();
+generate();
+</script>
+</body>
+</html>
